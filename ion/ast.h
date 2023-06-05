@@ -3,6 +3,11 @@ typedef struct Stmt Stmt;
 typedef struct Decl Decl;
 typedef struct Typespec Typespec;
 
+typedef struct StmtBlock {
+    Stmt **stmts;
+    size_t num_stmts;
+} StmtBlock;
+
 typedef enum TypespecKind {
     TYPESPEC_NONE,
     TYPESPEC_NAME,
@@ -12,8 +17,8 @@ typedef enum TypespecKind {
 } TypespecKind;
 
 typedef struct FuncTypespec {
-    size_t num_args;
     Typespec **args;
+    size_t num_args;
     Typespec *ret;
 } FuncTypespec;
 
@@ -56,11 +61,12 @@ typedef struct FuncDecl {
     FuncParam *params;
     size_t num_params;
     Typespec *ret_type;
+    StmtBlock block;
 } FuncDecl;
 
 typedef struct EnumItem {
     const char *name;
-    Typespec *type;
+    Expr *init;
 } EnumItem;
 
 typedef struct EnumDecl {
@@ -119,6 +125,8 @@ typedef enum ExprKind {
     EXPR_UNARY,
     EXPR_BINARY,
     EXPR_TERNARY,
+    EXPR_SIZEOF_EXPR,
+    EXPR_SIZEOF_TYPE,
 } ExprKind;
 
 typedef struct CompoundExpr {
@@ -145,8 +153,8 @@ typedef struct BinaryExpr {
 
 typedef struct TernaryExpr {
     Expr *cond;
-    Expr *if_true;
-    Expr *if_false;
+    Expr *then_expr;
+    Expr *else_expr;
 } TernaryExpr;
 
 typedef struct CallExpr {
@@ -172,6 +180,8 @@ struct Expr {
         double float_val;
         const char *str_val;
         const char *name;
+        Expr *sizeof_expr;
+        Typespec *sizeof_type;
         CompoundExpr compound;
         CastExpr cast;
         UnaryExpr unary;
@@ -185,24 +195,24 @@ struct Expr {
 
 typedef enum StmtKind {
     STMT_NONE,
+    STMT_DECL,
     STMT_RETURN,
     STMT_BREAK,
     STMT_CONTINUE,
     STMT_BLOCK,
     STMT_IF,
     STMT_WHILE,
+    STMT_DO_WHILE,
     STMT_FOR,
-    STMT_DO,
     STMT_SWITCH,
     STMT_ASSIGN,
-    STMT_AUTO_ASSIGN,
+    STMT_INIT,
     STMT_EXPR,
 } StmtKind;
 
-typedef struct StmtBlock {
-    Stmt **stmts;
-    size_t num_stmts;
-} StmtBlock;
+typedef struct ReturnStmt {
+    Expr *expr;
+} ReturnStmt;
 
 typedef struct ElseIf {
     Expr *cond;
@@ -223,14 +233,16 @@ typedef struct WhileStmt {
 } WhileStmt;
 
 typedef struct ForStmt {
-    StmtBlock init;
+    Stmt *init;
     Expr *cond;
-    StmtBlock next;
+    Stmt *next;
+    StmtBlock block;
 } ForStmt;
 
 typedef struct SwitchCase {
     Expr **exprs;
     size_t num_exprs;
+    bool is_default;
     StmtBlock block;
 } SwitchCase;
 
@@ -246,19 +258,23 @@ typedef struct AssignStmt {
     Expr *right;
 } AssignStmt;
 
-typedef struct AutoAssignStmt {
+typedef struct InitStmt {
     const char *name;
-    Expr *init;
-} AutoAssignStmt;
+    Expr *expr;
+} InitStmt;
 
 struct Stmt {
     StmtKind kind;
     union {
+        ReturnStmt return_stmt;
         IfStmt if_stmt;
         WhileStmt while_stmt;
         ForStmt for_stmt;
         SwitchStmt switch_stmt;
+        StmtBlock block;
         AssignStmt assign;
-        AutoAssignStmt autoassign;
+        InitStmt init;
+        Expr *expr;
+        Decl *decl;
     };
 };
