@@ -6,6 +6,7 @@ const char *var_keyword;
 const char *const_keyword;
 const char *func_keyword;
 const char *sizeof_keyword;
+const char *cast_keyword;
 const char *break_keyword;
 const char *continue_keyword;
 const char *return_keyword;
@@ -24,7 +25,7 @@ const char **keywords;
 
 #define KEYWORD(name) name##_keyword = str_intern(#name); buf_push(keywords, name##_keyword)
 
-void init_keywords() {
+void init_keywords(void) {
     static bool inited;
     if (inited) {
         return;
@@ -38,6 +39,7 @@ void init_keywords() {
     KEYWORD(var);
     KEYWORD(func);
     KEYWORD(sizeof);
+    KEYWORD(cast);
     KEYWORD(break);
     KEYWORD(continue);
     KEYWORD(return);
@@ -79,6 +81,8 @@ typedef enum TokenKind {
     TOKEN_FLOAT,
     TOKEN_STR,
     TOKEN_NAME,
+    TOKEN_NEG,
+    TOKEN_NOT,
     // Multiplicative precedence
     TOKEN_FIRST_MUL,
     TOKEN_MUL = TOKEN_FIRST_MUL,
@@ -199,7 +203,7 @@ typedef struct Token {
     const char *start;
     const char *end;
     union {
-        uint64_t int_val;
+        int64_t int_val;
         double float_val;
         const char *str_val;
         const char *name;
@@ -209,7 +213,7 @@ typedef struct Token {
 Token token;
 const char *stream;
 
-const char *token_info() {
+const char *token_info(void) {
     if (token.kind == TOKEN_NAME || token.kind == TOKEN_KEYWORD) {
         return token.name;
     } else {
@@ -236,7 +240,7 @@ uint8_t char_to_digit[256] = {
     ['f'] = 15, ['F'] = 15,
 };
 
-void scan_int() {
+void scan_int(void) {
     uint64_t base = 10;
     if (*stream == '0') {
         stream++;
@@ -278,7 +282,7 @@ void scan_int() {
     token.int_val = val;
 }
 
-void scan_float() {
+void scan_float(void) {
     const char *start = stream;
     while (isdigit(*stream)) {
         stream++;
@@ -319,7 +323,7 @@ char escape_to_char[256] = {
     ['0'] = 0,
 };
 
-void scan_char() {
+void scan_char(void) {
     assert(*stream == '\'');
     stream++;
     char val = 0;
@@ -349,7 +353,7 @@ void scan_char() {
     token.mod = TOKENMOD_CHAR;
 }
 
-void scan_str() {
+void scan_str(void) {
     assert(*stream == '"');
     stream++;
     char *str = NULL;
@@ -408,7 +412,7 @@ void scan_str() {
         } \
         break;
 
-void next_token() {
+void next_token(void) {
 repeat:
     token.start = stream;
     token.mod = 0;
@@ -501,6 +505,8 @@ repeat:
     CASE1(',', TOKEN_COMMA)
     CASE1('?', TOKEN_QUESTION)
     CASE1(';', TOKEN_SEMICOLON)
+    CASE1('~', TOKEN_NEG)
+    CASE1('!', TOKEN_NOT)
     CASE2(':', TOKEN_COLON, '=', TOKEN_COLON_ASSIGN)
     CASE2('=', TOKEN_ASSIGN, '=', TOKEN_EQ)
     CASE2('^', TOKEN_XOR, '=', TOKEN_XOR_ASSIGN)
@@ -533,7 +539,7 @@ bool is_token(TokenKind kind) {
 }
 
 
-bool is_token_eof() {
+bool is_token_eof(void) {
     return token.kind == TOKEN_EOF;
 }
 
@@ -573,7 +579,7 @@ bool expect_token(TokenKind kind) {
     }
 }
 
-void keyword_test() {
+void keyword_test(void) {
     init_keywords();
     assert(is_keyword_name(first_keyword));
     assert(is_keyword_name(last_keyword));
@@ -590,9 +596,8 @@ void keyword_test() {
 #define assert_token_str(x) assert(strcmp(token.str_val, (x)) == 0 && match_token(TOKEN_STR))
 #define assert_token_eof() assert(is_token(0))
 
-void lex_test() {
+void lex_test(void) {
     keyword_test();
-
     // Integer literal tests
     init_stream("0 18446744073709551615 0xffffffffffffffff 042 0b1111");
     assert_token_int(0);

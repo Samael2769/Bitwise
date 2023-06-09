@@ -1,4 +1,5 @@
 #define MAX(x, y) ((x) >= (y) ? (x) : (y))
+#define IS_POW2(x) (((x) != 0) && ((x) & ((x)-1)) == 0)
 #define ALIGN_DOWN(n, a) ((n) & ~((a) - 1))
 #define ALIGN_UP(n, a) ALIGN_DOWN((n) + (a) - 1, (a))
 #define ALIGN_DOWN_PTR(p, a) ((void *)ALIGN_DOWN((uintptr_t)(p), (a)))
@@ -29,6 +30,12 @@ void *xmalloc(size_t num_bytes) {
         exit(1);
     }
     return ptr;
+}
+
+void *memdup(void *src, size_t size) {
+    void *dest = xmalloc(size);
+    memcpy(dest, src, size);
+    return dest;
 }
 
 void fatal(const char *fmt, ...) {
@@ -101,21 +108,22 @@ void *buf__grow(const void *buf, size_t new_len, size_t elem_size) {
 char *buf__printf(char *buf, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    size_t n = vsnprintf(NULL, 0, fmt, args);
+    size_t cap = buf_cap(buf) - buf_len(buf);
+    size_t n = 1 + vsnprintf(buf_end(buf), cap, fmt, args);
     va_end(args);
-    if (buf_len(buf) == 0) {
-        n++;
+    if (n > cap) {
+        buf_fit(buf, n + buf_len(buf));
+        va_start(args, fmt);
+        size_t new_cap = buf_cap(buf) - buf_len(buf);
+        n = 1 + vsnprintf(buf_end(buf), new_cap, fmt, args);
+        assert(n <= new_cap);
+        va_end(args);
     }
-    buf_fit(buf, n + buf_len(buf));
-    char *dest = buf_len(buf) == 0 ? buf : buf + buf_len(buf) - 1;
-    va_start(args, fmt);
-    vsnprintf(dest, buf + buf_cap(buf) - dest, fmt, args);
-    va_end(args);
-    buf__hdr(buf)->len += n;
+    buf__hdr(buf)->len += n - 1;
     return buf;
 }
 
-void buf_test() {
+void buf_test(void) {
     int *buf = NULL;
     assert(buf_len(buf) == 0);
     int n = 1024;
@@ -203,7 +211,7 @@ const char *str_intern(const char *str) {
     return str_intern_range(str, str + strlen(str));
 }
 
-void intern_test() {
+void intern_test(void) {
     char a[] = "hello";
     assert(strcmp(a, str_intern(a)) == 0);
     assert(str_intern(a) == str_intern(a));
@@ -217,7 +225,7 @@ void intern_test() {
     assert(str_intern(a) != str_intern(d));
 }
 
-void common_test() {
+void common_test(void) {
     buf_test();
     intern_test();
 }

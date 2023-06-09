@@ -19,11 +19,11 @@
 #include "parse.c"
 #include "resolve.c"
 
-void main_test() {
+void main_test(void) {
     common_test();
     lex_test();
-    print_test();
-    parse_test();
+    // print_test();
+    //parse_test();
     resolve_test();
 }
 

@@ -18,7 +18,7 @@ void flush_print_buf(FILE *file) {
     }
 }
 
-void print_newline() {
+void print_newline(void) {
     printf("\n%.*s", 2*indent, "                                                                      ");
 }
 
@@ -35,7 +35,11 @@ void print_typespec(Typespec *type) {
             print_typespec(*it);
         }
         printf(" ) ");
-        print_typespec(t->func.ret);
+        if (t->func.ret) {
+            print_typespec(t->func.ret);
+        } else {
+            printf("void");
+        }
         printf(")");
         break;
     case TYPESPEC_ARRAY:
@@ -116,9 +120,20 @@ void print_expr(Expr *expr) {
         } else {
             printf("nil");
         }
-        for (Expr **it = e->compound.args; it != e->compound.args + e->compound.num_args; it++) {
+        for (CompoundField *it = e->compound.fields; it != e->compound.fields + e->compound.num_fields; it++) {
             printf(" ");
-            print_expr(*it);
+            if (it->kind == FIELD_DEFAULT) {
+                printf("(nil ");
+            } else if (it->kind == FIELD_NAME) {
+                printf("(name %s ", it->name);
+            } else {
+                assert(it->kind == FIELD_INDEX);
+                printf("(index ");
+                print_expr(it->index);
+                printf(" ");
+            }
+            print_expr(it->init);
+            printf(")");
         }
         printf(")");
         break;
@@ -149,7 +164,7 @@ void print_expr(Expr *expr) {
     }
 }
 
-void print_stmt_block(StmtBlock block) {
+void print_stmt_block(StmtList block) {
     printf("(block");
     indent++;
     for (Stmt **it = block.stmts; it != block.stmts + block.num_stmts; it++) {
@@ -168,9 +183,9 @@ void print_stmt(Stmt *stmt) {
         break;
     case STMT_RETURN:
         printf("(return");
-        if (s->return_stmt.expr) {
+        if (s->expr) {
             printf(" ");
-            print_expr(s->return_stmt.expr);
+            print_expr(s->expr);
         }
         printf(")");
         break;
@@ -282,10 +297,10 @@ void print_aggregate_decl(Decl *decl) {
     for (AggregateItem *it = d->aggregate.items; it != d->aggregate.items + d->aggregate.num_items; it++) {
         print_newline();
         printf("(");
-        print_typespec(it->type);
         for (const char **name = it->names; name != it->names + it->num_names; name++) {
-            printf(" %s", *name);
+            printf("%s ", *name);
         }
+        print_typespec(it->type);
         printf(")");
     }
 }
@@ -331,7 +346,11 @@ void print_decl(Decl *decl) {
             printf("nil");
         }
         printf(" ");
-        print_expr(d->var.expr);
+        if (d->var.expr) {
+            print_expr(d->var.expr);
+        } else {
+            printf("nil");
+        }
         printf(")");
         break;
     case DECL_CONST:
@@ -370,7 +389,7 @@ void print_decl(Decl *decl) {
 }
 
 
-void print_test() {
+void print_test(void) {
     use_print_buf = true;
     // Expressions
     Expr *exprs[] = {
@@ -381,7 +400,6 @@ void print_test() {
         expr_call(expr_name("fact"), (Expr*[]){expr_int(42)}, 1),
         expr_index(expr_field(expr_name("person"), "siblings"), expr_int(3)),
         expr_cast(typespec_ptr(typespec_name("int")), expr_name("void_ptr")),
-        expr_compound(typespec_name("Vector"), (Expr*[]){expr_int(1), expr_int(2)}, 2),
     };
     for (Expr **it = exprs; it != exprs + sizeof(exprs)/sizeof(*exprs); it++) {
         print_expr(*it);
@@ -394,7 +412,7 @@ void print_test() {
         stmt_break(),
         stmt_continue(),
         stmt_block(
-            (StmtBlock){
+            (StmtList){
                 (Stmt*[]){
                     stmt_break(),
                     stmt_continue()
@@ -406,7 +424,7 @@ void print_test() {
         stmt_init("x", expr_int(42)),
         stmt_if(
             expr_name("flag1"),
-            (StmtBlock){
+            (StmtList){
                 (Stmt*[]){
                     stmt_return(expr_int(1))
                 },
@@ -414,7 +432,7 @@ void print_test() {
             },
             (ElseIf[]){
                 expr_name("flag2"),
-                (StmtBlock){
+                (StmtList){
                     (Stmt*[]){
                         stmt_return(expr_int(2))
                     },
@@ -422,7 +440,7 @@ void print_test() {
                 }
             },
             1,
-            (StmtBlock){
+            (StmtList){
                 (Stmt*[]){
                     stmt_return(expr_int(3))
                 },
@@ -431,7 +449,7 @@ void print_test() {
         ),
         stmt_while(
             expr_name("running"),
-            (StmtBlock){
+            (StmtList){
                 (Stmt*[]){
                     stmt_assign(TOKEN_ADD_ASSIGN, expr_name("i"), expr_int(16)),
                 },
@@ -445,7 +463,7 @@ void print_test() {
                     (Expr*[]){expr_int(3), expr_int(4)},
                     2,
                     false,
-                    (StmtBlock){
+                    (StmtList){
                         (Stmt*[]){stmt_return(expr_name("val"))},
                         1,
                     },
@@ -454,7 +472,7 @@ void print_test() {
                     (Expr*[]){expr_int(1)},
                     1,
                     true,
-                    (StmtBlock){
+                    (StmtList){
                         (Stmt*[]){stmt_return(expr_int(0))},
                         1,
                     },
