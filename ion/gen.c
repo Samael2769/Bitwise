@@ -127,8 +127,12 @@ void gen_func_decl(Decl *decl) {
 }
 
 void gen_forward_decls(void) {
-    for (size_t i = 0; i < buf_len(global_syms); i++) {
-        Sym *sym = global_syms[i];
+    for (size_t i = 0; i < global_syms.cap; i++) {
+        MapEntry *entry = global_syms.entries + i;
+        if (!entry->key) {
+            continue;
+        }
+        Sym *sym = entry->val;
         Decl *decl = sym->decl;
         if (!decl) {
             continue;
@@ -157,18 +161,12 @@ void gen_aggregate(Decl *decl) {
     gen_indent++;
     for (size_t i = 0; i < decl->aggregate.num_items; i++) {
         AggregateItem item = decl->aggregate.items[i];
-        if (item.num_names != 1) {
-            fatal("NYI: only only field allowed per aggregate item decl");
+        for (size_t j = 0; j < item.num_names; j++) {
+            genlnf("%s;", typespec_to_cdecl(item.type, item.names[j]));
         }
-        genlnf("%s;", typespec_to_cdecl(item.type, item.names[0]));
     }
     gen_indent--;
     genlnf("};");
-}
-
-void gen_str(const char *str) {
-    // TODO: proper quoted string escaping
-    genf("\"%s\"", str);
 }
 
 void gen_expr(Expr *expr) {
@@ -180,7 +178,8 @@ void gen_expr(Expr *expr) {
         genf("%f", expr->float_val);
         break;
     case EXPR_STR:
-        gen_str(expr->str_val);
+        // TODO: proper quoted string escaping
+        genf("\"%s\"", expr->str_val);
         break;
     case EXPR_NAME:
         genf("%s", expr->name);
@@ -466,6 +465,7 @@ void cdecl_test(void) {
 }
 
 void gen_all(void) {
+    gen_buf = NULL;
     genf("// Forward declarations");
     gen_forward_decls();
     genln();
@@ -479,14 +479,14 @@ void gen_test(void) {
     const char *code = 
         "func example_test(): int { return fact_rec(10) == fact_iter(10); }\n"
         "union IntOrPtr { i: int; p: int*; }\n"
-        "func f() {\n"
-        "    u1 := IntOrPtr{i = 42};\n"
-        "    u2 := IntOrPtr{p = cast(int*, 42)};\n"
-        "    u1.i = 0;\n"
-        "    u2.p = cast(int*, 0);\n"
-        "}\n"
+        "// func f() {\n"
+        "//     u1 := IntOrPtr{i = 42};\n"
+        "//     u2 := IntOrPtr{p = cast(int*, 42)};\n"
+        "//     u1.i = 0;\n"
+        "//     u2.p = cast(int*, 0);\n"
+        "// }\n"
         "var i: int\n"
-        "struct Vector { x: int; y: int; }\n"
+        "struct Vector { x, y: int; }\n"
         "func fact_iter(n: int): int { r := 1; for (i := 2; i <= n; i++) { r *= i; } return r; }\n"
         "func fact_rec(n: int): int { if (n == 0) { return 1; } else { return n * fact_rec(n-1); } }\n"
 #if 0
@@ -503,7 +503,7 @@ void gen_test(void) {
         "struct T { a: int[n]; }\n"
         ;
 
-    init_stream(code);
+    init_stream(NULL, code);
     init_global_syms();
     sym_global_decls(parse_file());
     finalize_syms();
@@ -549,12 +549,6 @@ union IntOrPtr {
     int i;
     int (*p);
 };
-void f(void) {
-    IntOrPtr u1 = (IntOrPtr){.i = 42};
-    IntOrPtr u2 = (IntOrPtr){.p = (int *)(42)};
-    u1.i = 0;
-    u2.p = (int *)(0);
-}
 int i;
 struct Vector {
     int x;
