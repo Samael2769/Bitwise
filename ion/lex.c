@@ -22,6 +22,8 @@ const char *first_keyword;
 const char *last_keyword;
 const char **keywords;
 
+const char *foreign_name;
+
 #define KEYWORD(name) name##_keyword = str_intern(#name); buf_push(keywords, name##_keyword)
 
 void init_keywords(void) {
@@ -52,6 +54,9 @@ void init_keywords(void) {
     assert(intern_arena.end == arena_end);
     first_keyword = typedef_keyword;
     last_keyword = default_keyword;
+
+    foreign_name = str_intern("foreign");
+
     inited = true;
 }
 
@@ -72,6 +77,8 @@ typedef enum TokenKind {
     TOKEN_RBRACKET,
     TOKEN_COMMA,
     TOKEN_DOT,
+    TOKEN_AT,
+    TOKEN_ELLIPSIS,
     TOKEN_QUESTION,
     TOKEN_SEMICOLON,
     TOKEN_KEYWORD,
@@ -146,6 +153,8 @@ const char *token_kind_names[] = {
     [TOKEN_RBRACKET] = "]",
     [TOKEN_COMMA] = ",",
     [TOKEN_DOT] = ".",
+    [TOKEN_AT] = "@",
+    [TOKEN_ELLIPSIS] = "...",
     [TOKEN_QUESTION] = "?",
     [TOKEN_SEMICOLON] = ";",
     [TOKEN_KEYWORD] = "keyword",
@@ -153,6 +162,7 @@ const char *token_kind_names[] = {
     [TOKEN_FLOAT] = "float",
     [TOKEN_STR] = "string",
     [TOKEN_NAME] = "name",
+    [TOKEN_NEG] = "~",
     [TOKEN_MUL] = "*",
     [TOKEN_DIV] = "/",
     [TOKEN_MOD] = "%",
@@ -221,7 +231,7 @@ const char *line_start;
 void error(SrcPos pos, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    printf("%s(%d): ", pos.name, pos.line);
+    printf("%s(%d): error: ", pos.name, pos.line);
     vprintf(fmt, args);
     printf("\n");
     va_end(args);
@@ -277,7 +287,7 @@ void scan_int(void) {
     }
     int val = 0;
     for (;;) {
-        int digit = char_to_digit[*(unsigned char *)stream];
+        int digit = char_to_digit[(unsigned char)*stream];
         if (digit == 0 && *stream != '0') {
             break;
         }
@@ -352,7 +362,7 @@ void scan_char(void) {
         syntax_error("Char literal cannot contain newline");
     } else if (*stream == '\\') {
         stream++;
-        val = escape_to_char[*(unsigned char *)stream];
+        val = escape_to_char[(unsigned char)*stream];
         if (val == 0 && *stream != '0') {
             syntax_error("Invalid char literal escape '\\%c'", *stream);
         }
@@ -382,7 +392,7 @@ void scan_str(void) {
             break;
         } else if (val == '\\') {
             stream++;
-            val = escape_to_char[*(unsigned char *)stream];
+            val = escape_to_char[(unsigned char)*stream];
             if (val == 0 && *stream != '0') {
                 syntax_error("Invalid string literal escape '\\%c'", *stream);
             }
@@ -452,6 +462,9 @@ repeat:
     case '.':
         if (isdigit(stream[1])) {
             scan_float();
+        } else if (stream[1] == '.' && stream[2] == '.') {
+            token.kind = TOKEN_ELLIPSIS;
+            stream += 3;
         } else {
             token.kind = TOKEN_DOT;
             stream++;
@@ -535,10 +548,11 @@ repeat:
     CASE1('[', TOKEN_LBRACKET)
     CASE1(']', TOKEN_RBRACKET)
     CASE1(',', TOKEN_COMMA)
+    CASE1('@', TOKEN_AT)
     CASE1('?', TOKEN_QUESTION)
     CASE1(';', TOKEN_SEMICOLON)
     CASE1('~', TOKEN_NEG)
-    CASE1('!', TOKEN_NOT)
+    CASE2('!', TOKEN_NOT, '=', TOKEN_NOTEQ)
     CASE2(':', TOKEN_COLON, '=', TOKEN_COLON_ASSIGN)
     CASE2('=', TOKEN_ASSIGN, '=', TOKEN_EQ)
     CASE2('^', TOKEN_XOR, '=', TOKEN_XOR_ASSIGN)
@@ -608,7 +622,7 @@ bool expect_token(TokenKind kind) {
         next_token();
         return true;
     } else {
-        fatal_syntax_error("expected token %s, got %s", token_kind_name(kind), token_info());
+        fatal_syntax_error("Expected token %s, got %s", token_kind_name(kind), token_info());
         return false;
     }
 }
