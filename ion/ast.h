@@ -3,17 +3,23 @@ typedef struct Stmt Stmt;
 typedef struct Decl Decl;
 typedef struct Typespec Typespec;
 
+typedef struct NoteArg {
+    SrcPos pos;
+    const char *name;
+    Expr *expr;
+} NoteArg;
+
 typedef struct Note {
     SrcPos pos;
     const char *name;
+    NoteArg *args;
+    size_t num_args;
 } Note;
 
-typedef struct NoteList {
+typedef struct Notes {
     Note *notes;
     size_t num_notes;
-} NoteList;
-
-struct Type;
+} Notes;
 
 typedef struct StmtList {
     SrcPos pos;
@@ -27,27 +33,22 @@ typedef enum TypespecKind {
     TYPESPEC_FUNC,
     TYPESPEC_ARRAY,
     TYPESPEC_PTR,
+    TYPESPEC_CONST,
 } TypespecKind;
 
 struct Typespec {
     TypespecKind kind;
     SrcPos pos;
-    struct Type *type;
+    Typespec *base;
     union {
         const char *name;
         struct {
             Typespec **args;
             size_t num_args;
+            bool has_varargs;
             Typespec *ret;
-            bool variadic;
         } func;
-        struct {
-            Typespec *elem;
-            Expr *size;
-        } array;
-        struct {
-            Typespec *elem;
-        } ptr;
+        Expr *num_elems;
     };
 };
 
@@ -79,15 +80,17 @@ typedef enum DeclKind {
     DECL_CONST,
     DECL_TYPEDEF,
     DECL_FUNC,
+    DECL_NOTE,
 } DeclKind;
 
 struct Decl {
     DeclKind kind;
     SrcPos pos;
     const char *name;
-    struct Sym *sym;
-    NoteList notes;
+    Notes notes;
+    bool is_incomplete;
     union {
+        Note note;
         struct {
             EnumItem *items;
             size_t num_items;
@@ -100,7 +103,7 @@ struct Decl {
             FuncParam *params;
             size_t num_params;
             Typespec *ret_type;
-            bool variadic;
+            bool has_varargs;
             StmtList block;
         } func;
         struct {
@@ -111,15 +114,16 @@ struct Decl {
             Expr *expr;
         } var;
         struct {
+            Typespec *type;
             Expr *expr;
         } const_decl;
     };
 };
 
-typedef struct DeclSet {
+typedef struct Decls {
     Decl **decls;
     size_t num_decls;
-} DeclSet;
+} Decls;
 
 typedef enum ExprKind {
     EXPR_NONE,
@@ -137,6 +141,8 @@ typedef enum ExprKind {
     EXPR_TERNARY,
     EXPR_SIZEOF_EXPR,
     EXPR_SIZEOF_TYPE,
+    EXPR_TYPEOF_EXPR,
+    EXPR_TYPEOF_TYPE,
 } ExprKind;
 
 typedef enum CompoundFieldKind {
@@ -158,14 +164,25 @@ typedef struct CompoundField {
 struct Expr {
     ExprKind kind;
     SrcPos pos;
-    struct Type *type;
     union {
-        int int_val;
-        double float_val;
-        const char *str_val;
+        struct {
+            unsigned long long val;
+            TokenMod mod;
+            TokenSuffix suffix;
+        } int_lit;
+        struct {
+            double val;
+            TokenSuffix suffix;
+        } float_lit;
+        struct {
+            const char *val;
+            TokenMod mod;
+        } str_lit;
         const char *name;
         Expr *sizeof_expr;
         Typespec *sizeof_type;
+        Expr *typeof_expr;
+        Typespec *typeof_type;
         struct {
             Typespec *type;
             CompoundField *fields;
@@ -270,6 +287,7 @@ struct Stmt {
         } assign;
         struct {
             const char *name;
+            Typespec *type;
             Expr *expr;
         } init;
     };

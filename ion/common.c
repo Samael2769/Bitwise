@@ -134,7 +134,7 @@ typedef struct BufHdr {
 #define buf_push(b, ...) (buf_fit((b), 1 + buf_len(b)), (b)[buf__hdr(b)->len++] = (__VA_ARGS__))
 #define buf_printf(b, ...) ((b) = buf__printf((b), __VA_ARGS__))
 #define buf_clear(b) ((b) ? buf__hdr(b)->len = 0 : 0)
-    
+
 void *buf__grow(const void *buf, size_t new_len, size_t elem_size) {
     assert(buf_cap(buf) <= (SIZE_MAX - 1)/2);
     size_t new_cap = MAX(16, MAX(1 + 2*buf_cap(buf), new_len));
@@ -242,8 +242,16 @@ uint64_t hash_ptr(void *ptr) {
     return hash_uint64((uintptr_t)ptr);
 }
 
-uint64_t hash_bytes(const char *buf, size_t len) {
+uint64_t hash_mix(uint64_t x, uint64_t y) {
+    x ^= y;
+    x *= 0xff51afd7ed558ccd;
+    x ^= x >> 32;
+    return x;
+}
+
+uint64_t hash_bytes(const void *ptr, size_t len) {
     uint64_t x = 0xcbf29ce484222325;
+    const char *buf = (const char *)ptr;
     for (size_t i = 0; i < len; i++) {
         x ^= buf[i];
         x *= 0x100000001b3;
@@ -280,7 +288,7 @@ void *map_get(Map *map, void *key) {
 
 void map_put(Map *map, void *key, void *val);
 
- void map_grow(Map *map, size_t new_cap) {
+void map_grow(Map *map, size_t new_cap) {
     new_cap = MAX(16, new_cap);
     Map new_map = {
         .keys = xcalloc(new_cap, sizeof(void *)),
@@ -367,29 +375,21 @@ const char *str_intern(const char *str) {
     return str_intern_range(str, str + strlen(str));
 }
 
-void intern_test(void) {
-    char a[] = "hello";
-    assert(strcmp(a, str_intern(a)) == 0);
-    assert(str_intern(a) == str_intern(a));
-    assert(str_intern(str_intern(a)) == str_intern(a));
-    char b[] = "hello";
-    assert(a != b);
-    assert(str_intern(a) == str_intern(b));
-    char c[] = "hello!";
-    assert(str_intern(a) != str_intern(c));
-    char d[] = "hell";
-    assert(str_intern(a) != str_intern(d));
-}
+// Value union
 
-void common_test(void) {
-    buf_test();
-    intern_test();
-    map_test();
+typedef union Val {
+    bool b;
+    char c;
+    unsigned char uc;
+    signed char sc;
+    short s;
+    unsigned short us;
+    int i;
+    unsigned u;
+    long l;
+    unsigned long ul;
+    long long ll;
+    unsigned long long ull;
+    uintptr_t p;
+} Val;
 
-    char *str1 = strf("%d %d", 1, 2);
-    assert(strcmp(str1, "1 2") == 0);
-    char *str2 = strf("%s %s", str1, str1);
-    assert(strcmp(str2, "1 2 1 2") == 0);
-    char *str3 = strf("%s asdf %s", str2, str2);
-    assert(strcmp(str3, "1 2 1 2 asdf 1 2 1 2") == 0);
-}
