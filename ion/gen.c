@@ -13,6 +13,7 @@ const char *gen_preamble =
     "#include <stdbool.h>\n"
     "#include <stdint.h>\n"
     "#include <stddef.h>\n"
+    "#include <assert.h>\n"
     "\n"
     "typedef unsigned char uchar;\n"
     "typedef signed char schar;\n"
@@ -41,8 +42,8 @@ const char *gen_preamble =
     "#else\n"
     "#define alignof(x) __alignof__(x)\n"
     "#endif\n"
+    "\n"
     ;
-
 
 void genln(void) {
     genf("\n%.*s", gen_indent * 4, "                                                                  ");
@@ -284,10 +285,17 @@ void gen_aggregate(Decl *decl) {
     genlnf("};");
 }
 
-void gen_init_expr(Expr *expr);
+void gen_expr(Expr *expr);
 
-void gen_expr_compound(Expr *expr, bool is_init) {
-    if (is_init) {
+void gen_paren_expr(Expr *expr) {
+    genf("(");
+    gen_expr(expr);
+    genf(")");
+}
+
+void gen_expr_compound(Expr *expr) {
+    Type *expected_type = get_resolved_expected_type(expr);
+    if (expected_type && !is_ptr_type(expected_type)) {
         genf("{");
     } else if (expr->compound.type) {
         genf("(%s){", typespec_to_cdecl(expr->compound.type, ""));
@@ -306,7 +314,7 @@ void gen_expr_compound(Expr *expr, bool is_init) {
             gen_expr(field.index);
             genf("] = ");
         }
-        gen_init_expr(field.init);
+        gen_expr(field.init);
     }
     if (expr->compound.num_fields == 0) {
         genf("0");
@@ -373,7 +381,7 @@ void gen_expr(Expr *expr) {
         genf("%s%s", get_resolved_type(expr->field.expr)->kind == TYPE_PTR ? "->" : ".", expr->field.name);
         break;
     case EXPR_COMPOUND:
-        gen_expr_compound(expr, false);
+        gen_expr_compound(expr);
         break;
     case EXPR_UNARY:
         genf("%s(", token_kind_name(expr->unary.op));
@@ -404,6 +412,12 @@ void gen_expr(Expr *expr) {
     case EXPR_SIZEOF_TYPE:
         genf("sizeof(%s)", type_to_cdecl(get_resolved_type(expr->sizeof_type), ""));
         break;
+    case EXPR_ALIGNOF_EXPR:
+        genf("alignof(%s)", type_to_cdecl(get_resolved_type(expr->alignof_expr), ""));
+        break;
+    case EXPR_ALIGNOF_TYPE:
+        genf("alignof(%s)", type_to_cdecl(get_resolved_type(expr->alignof_type), ""));
+        break;
     case EXPR_TYPEOF_EXPR: {
         Type *type = get_resolved_type(expr->typeof_expr);
         assert(type->typeid);
@@ -416,6 +430,18 @@ void gen_expr(Expr *expr) {
         genf("%d", type->typeid);
         break;
     }
+    case EXPR_OFFSETOF:
+        genf("offsetof(%s, %s)", typespec_to_cdecl(expr->offsetof_field.type, ""), expr->offsetof_field.name);
+        break;
+    case EXPR_MODIFY:
+        if (!expr->modify.post) {
+            genf("%s", token_kind_name(expr->modify.op));
+        }
+        gen_paren_expr(expr->modify.expr);
+        if (expr->modify.post) {
+            genf("%s", token_kind_name(expr->modify.op));
+        }
+        break;
     default:
         assert(0);
     }
@@ -433,14 +459,6 @@ void gen_stmt_block(StmtList block) {
     genlnf("}");
 }
 
-void gen_init_expr(Expr *expr) {
-    if (expr->kind == EXPR_COMPOUND) {
-        gen_expr_compound(expr, true);
-    } else {
-        gen_expr(expr);
-    }
-}
-
 void gen_simple_stmt(Stmt *stmt) {
     switch (stmt->kind) {
     case STMT_EXPR:
@@ -455,21 +473,17 @@ void gen_simple_stmt(Stmt *stmt) {
             }
             if (stmt->init.expr) {
                 genf(" = ");
-                gen_init_expr(stmt->init.expr);
+                gen_expr(stmt->init.expr);
             }
         } else {
             genf("%s = ", type_to_cdecl(unqualify_type(get_resolved_type(stmt->init.expr)), stmt->init.name));
-            gen_init_expr(stmt->init.expr);
+            gen_expr(stmt->init.expr);
         }
         break;
     case STMT_ASSIGN:
-        gen_expr(stmt->assign.left);
-        if (stmt->assign.right) {
-            genf(" %s ", token_kind_name(stmt->assign.op));
-            gen_expr(stmt->assign.right);
-        } else {
-            genf("%s", token_kind_name(stmt->assign.op));
-        }
+        gen_paren_expr(stmt->assign.left);
+        genf(" %s ", token_kind_name(stmt->assign.op));
+        gen_expr(stmt->assign.right);
         break;
     default:
         assert(0);
@@ -497,9 +511,27 @@ void gen_stmt(Stmt *stmt) {
         genln();
         gen_stmt_block(stmt->block);
         break;
+    case STMT_NOTE:
+        if (stmt->note.name == assert_name) {
+            genlnf("assert(");
+            assert(stmt->note.num_args == 1);
+            gen_expr(stmt->note.args[0].expr);
+            genf(");");
+        }
+        break;
     case STMT_IF:
+        if (stmt->if_stmt.init) {
+            genlnf("{");
+            gen_indent++;
+            gen_stmt(stmt->if_stmt.init);
+        }
+        gen_sync_pos(stmt->pos);
         genlnf("if (");
-        gen_expr(stmt->if_stmt.cond);
+        if (stmt->if_stmt.cond) {
+            gen_expr(stmt->if_stmt.cond);
+        } else {
+            genf("%s", stmt->if_stmt.init->init.name);
+        }
         genf(") ");
         gen_stmt_block(stmt->if_stmt.then_block);
         for (size_t i = 0; i < stmt->if_stmt.num_elseifs; i++) {
@@ -512,6 +544,20 @@ void gen_stmt(Stmt *stmt) {
         if (stmt->if_stmt.else_block.stmts) {
             genf(" else ");
             gen_stmt_block(stmt->if_stmt.else_block);
+        } else {
+            Note *complete_note = get_stmt_note(stmt, complete_name);
+            if (complete_note) {
+                genf(" else {");
+                gen_indent++;
+                gen_sync_pos(complete_note->pos);
+                genlnf("assert(\"@complete if/elseif chain failed to handle case\" && 0);");
+                gen_indent--;
+                genlnf("}");
+            }
+        }
+        if (stmt->if_stmt.init) {
+            gen_indent--;
+            genlnf("}");
         }
         break;
     case STMT_WHILE:
@@ -545,10 +591,11 @@ void gen_stmt(Stmt *stmt) {
         genf(") ");
         gen_stmt_block(stmt->for_stmt.block);
         break;
-    case STMT_SWITCH:
+    case STMT_SWITCH: {
         genlnf("switch (");
         gen_expr(stmt->switch_stmt.expr);
         genf(") {");
+        bool has_default = false;
         for (size_t i = 0; i < stmt->switch_stmt.num_cases; i++) {
             SwitchCase switch_case = stmt->switch_stmt.cases[i];
             for (size_t j = 0; j < switch_case.num_exprs; j++) {
@@ -558,6 +605,7 @@ void gen_stmt(Stmt *stmt) {
 
             }
             if (switch_case.is_default) {
+                has_default = true;
                 genlnf("default:");
             }
             genf(" ");
@@ -571,25 +619,25 @@ void gen_stmt(Stmt *stmt) {
             gen_indent--;
             genlnf("}");
         }
+        if (!has_default) {
+            Note *note = get_stmt_note(stmt, complete_name);
+            if (note) {
+                genlnf("default:");
+                gen_indent++;
+                genlnf("assert(\"@complete switch failed to handle case\" && 0);");
+                genlnf("break;");
+                gen_indent--;
+            }
+        }
         genlnf("}");
         break;
+    }
     default:
         genln();
         gen_simple_stmt(stmt);
         genf(";");
         break;
     }
-}
-
-void gen_enum(Decl *decl) {
-    assert(decl->kind == DECL_ENUM);
-    genlnf("typedef enum %s {", decl->name);
-    gen_indent++;
-    for (size_t i = 0; i < decl->enum_decl.num_items; i++) {
-        genlnf("%s,", decl->enum_decl.items[i].name);
-    }
-    gen_indent--;
-    genlnf("} %s;", decl->name);
 }
 
 void gen_decl(Sym *sym) {
@@ -631,7 +679,7 @@ void gen_decl(Sym *sym) {
         genlnf("typedef %s;", typespec_to_cdecl(decl->typedef_decl.type, sym->name));
         break;
     case DECL_ENUM:
-        gen_enum(decl);
+        genlnf("typedef int %s;", decl->name);
         break;
     default:
         assert(0);
@@ -666,7 +714,7 @@ void gen_defs(void) {
             }
             if (decl->var.expr) {
                 genf(" = ");
-                gen_init_expr(decl->var.expr);
+                gen_expr(decl->var.expr);
             }
             genf(";");
         }
@@ -712,13 +760,16 @@ void gen_headers(void) {
 }
 
 void gen_typeinfo_header(const char *kind, Type *type) { 
-    const char *ctype = type_to_cdecl(type, "");
-    genf("&(TypeInfo){%s, .size = sizeof(%s), .align = alignof(%s)", kind, ctype, ctype);
+    if (type_sizeof(type) == 0) {
+        genf("&(TypeInfo){%s, .size = 0, .align = 0", kind);
+    } else {
+        const char *ctype = type_to_cdecl(type, "");
+        genf("&(TypeInfo){%s, .size = sizeof(%s), .align = alignof(%s)", kind, ctype, ctype);
+    }
 }
 
 void gen_typeinfo_fields(Type *type) {
     gen_indent++;
-    assert(type->kind == TYPE_STRUCT || type->kind == TYPE_UNION);
     for (size_t i = 0; i < type->aggregate.num_fields; i++) {
         TypeField field = type->aggregate.fields[i];
         genlnf("{");
@@ -752,7 +803,7 @@ void gen_typeinfo(Type *type) {
     CASE(TYPE_FLOAT, float)
     CASE(TYPE_DOUBLE, double)
     case TYPE_VOID:
-        genf("&(TypeInfo){TYPE_VOID, .name = \"void\"},");
+        genf("&(TypeInfo){TYPE_VOID, .name = \"void\", .size = 0, .align = 0},");
         break;
     case TYPE_PTR:
         genf("&(TypeInfo){TYPE_PTR, .size = sizeof(void *), .align = alignof(void *), .base = %d},", type->base->typeid);
@@ -788,7 +839,7 @@ void gen_typeinfo(Type *type) {
         genf("NULL, // Incomplete: %s", type->sym->name);
         break;
     default:
-        genf("NULL, // Unhandled kind");
+        genf("NULL, // Unhandled");
         break;
     }
 }
@@ -797,7 +848,7 @@ void gen_typeinfo(Type *type) {
 
 void gen_typeinfos(void) {
     int num_typeinfos = next_typeid;
-    genlnf("TypeInfo *typeinfo_table[%d] = {", num_typeinfos);
+    genlnf("const TypeInfo *typeinfo_table[%d] = {", num_typeinfos);
     gen_indent++;
     for (int typeid = 0; typeid < num_typeinfos; typeid++) {
         genlnf("[%d] = ", typeid);
@@ -812,14 +863,13 @@ void gen_typeinfos(void) {
     genlnf("};");
     genln();
     genlnf("int num_typeinfos = %d;", num_typeinfos);
-    genlnf("TypeInfo **typeinfos = typeinfo_table;");
+    genlnf("const TypeInfo **typeinfos = (const TypeInfo **)typeinfo_table;");
 }
 
 void gen_all(void) {
     gen_buf = NULL;
     genf("// Foreign includes");
     gen_headers();
-    genln();
     genln();
     genlnf("%s", gen_preamble);
     genf("// Forward declarations");

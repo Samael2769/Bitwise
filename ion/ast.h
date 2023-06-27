@@ -139,10 +139,14 @@ typedef enum ExprKind {
     EXPR_UNARY,
     EXPR_BINARY,
     EXPR_TERNARY,
+    EXPR_MODIFY,
     EXPR_SIZEOF_EXPR,
     EXPR_SIZEOF_TYPE,
     EXPR_TYPEOF_EXPR,
     EXPR_TYPEOF_TYPE,
+    EXPR_ALIGNOF_EXPR,
+    EXPR_ALIGNOF_TYPE,
+    EXPR_OFFSETOF,
 } ExprKind;
 
 typedef enum CompoundFieldKind {
@@ -183,6 +187,12 @@ struct Expr {
         Typespec *sizeof_type;
         Expr *typeof_expr;
         Typespec *typeof_type;
+        Expr *alignof_expr;
+        Typespec *alignof_type;
+        struct {
+            Typespec *type;
+            const char *name;
+        } offsetof_field;
         struct {
             Typespec *type;
             CompoundField *fields;
@@ -192,6 +202,11 @@ struct Expr {
             Typespec *type;
             Expr *expr;            
         } cast;
+        struct {
+            TokenKind op;
+            bool post;
+            Expr *expr;
+        } modify;
         struct {
             TokenKind op;
             Expr *expr;
@@ -249,15 +264,19 @@ typedef enum StmtKind {
     STMT_ASSIGN,
     STMT_INIT,
     STMT_EXPR,
+    STMT_NOTE,
 } StmtKind;
 
 struct Stmt {
     StmtKind kind;
+    Notes notes;
     SrcPos pos;
     union {
+        Note note;
         Expr *expr;
         Decl *decl;
         struct {
+            Stmt *init;
             Expr *cond;
             StmtList then_block;
             ElseIf *elseifs;

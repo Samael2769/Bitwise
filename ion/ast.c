@@ -22,7 +22,7 @@ Note new_note(SrcPos pos, const char *name, NoteArg *args, size_t num_args) {
     return (Note){.pos = pos, .name = name, .args = AST_DUP(args), .num_args = num_args};
 }
 
-Notes new_note_list(Note *notes, size_t num_notes) {
+Notes new_notes(Note *notes, size_t num_notes) {
     return (Notes){AST_DUP(notes), num_notes};
 }
 
@@ -190,6 +190,33 @@ Expr *new_expr_typeof_type(SrcPos pos, Typespec *type) {
     return e;
 }
 
+Expr *new_expr_alignof_expr(SrcPos pos, Expr *expr) {
+    Expr *e = new_expr(EXPR_ALIGNOF_EXPR, pos);
+    e->alignof_expr = expr;
+    return e;
+}
+
+Expr *new_expr_alignof_type(SrcPos pos, Typespec *type) {
+    Expr *e = new_expr(EXPR_ALIGNOF_TYPE, pos);
+    e->alignof_type = type;
+    return e;
+}
+
+Expr *new_expr_offsetof(SrcPos pos, Typespec *type, const char *name) {
+    Expr *e = new_expr(EXPR_OFFSETOF, pos);
+    e->offsetof_field.type = type;
+    e->offsetof_field.name = name;
+    return e;
+}
+
+Expr *new_expr_modify(SrcPos pos, TokenKind op, bool post, Expr *expr) {
+    Expr *e = new_expr(EXPR_MODIFY, pos);
+    e->modify.op = op;
+    e->modify.post = post;
+    e->modify.expr = expr;
+    return e;
+}
+
 Expr *new_expr_int(SrcPos pos, unsigned long long val, TokenMod mod, TokenSuffix suffix) {
     Expr *e = new_expr(EXPR_INT, pos);
     e->int_lit.val = val;
@@ -278,10 +305,26 @@ Expr *new_expr_ternary(SrcPos pos, Expr *cond, Expr *then_expr, Expr *else_expr)
     return e;
 }
 
+Note *get_stmt_note(Stmt *stmt, const char *name) {
+    for (size_t i = 0; i < stmt->notes.num_notes; i++) {
+        Note *note = stmt->notes.notes + i;
+        if (note->name == name) {
+            return note;
+        }
+    }
+    return NULL;
+}
+
 Stmt *new_stmt(StmtKind kind, SrcPos pos) {
     Stmt *s = ast_alloc(sizeof(Stmt));
     s->kind = kind;
     s->pos = pos;
+    return s;
+}
+
+Stmt *new_stmt_note(SrcPos pos, Note note) {
+    Stmt *s = new_stmt(STMT_NOTE, pos);
+    s->note = note;
     return s;
 }
 
@@ -311,8 +354,9 @@ Stmt *new_stmt_block(SrcPos pos, StmtList block) {
     return s;
 }
 
-Stmt *new_stmt_if(SrcPos pos, Expr *cond, StmtList then_block, ElseIf *elseifs, size_t num_elseifs, StmtList else_block) {
+Stmt *new_stmt_if(SrcPos pos, Stmt *init, Expr *cond, StmtList then_block, ElseIf *elseifs, size_t num_elseifs, StmtList else_block) {
     Stmt *s = new_stmt(STMT_IF, pos);
+    s->if_stmt.init = init;
     s->if_stmt.cond = cond;
     s->if_stmt.then_block = then_block;
     s->if_stmt.elseifs = AST_DUP(elseifs);

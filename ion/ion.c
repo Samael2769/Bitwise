@@ -1,4 +1,6 @@
 const char *builtin_code =
+    "#declare_note(foreign)\n"
+    "#declare_note(static_assert)\n"
     "\n"
     "enum TypeKind {\n"
     "    TYPE_NONE,\n"
@@ -43,18 +45,23 @@ const char *builtin_code =
     "}\n"
     "\n"
     "@foreign\n"
-    "var typeinfos: TypeInfo**;\n"
+    "var typeinfos: TypeInfo const**;\n"
     "\n"
     "@foreign\n"
     "var num_typeinfos: int;\n"
     "\n"
-    "func get_typeinfo(type: typeid): TypeInfo* {\n"
+    "func get_typeinfo(type: typeid): TypeInfo const* {\n"
     "    if (typeinfos && type < num_typeinfos) {\n"
     "        return typeinfos[type];\n"
     "    } else {\n"
     "        return NULL;\n"
     "    }\n"
-    "}\n";
+    "}\n"
+    "struct Any {\n"
+    "    ptr: void*;\n"
+    "    type: typeid;\n"
+    "}\n"
+    "";
 
 void init_compiler(void) {
     init_builtins();

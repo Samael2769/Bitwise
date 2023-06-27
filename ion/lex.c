@@ -6,7 +6,9 @@ const char *var_keyword;
 const char *const_keyword;
 const char *func_keyword;
 const char *sizeof_keyword;
+const char *alignof_keyword;
 const char *typeof_keyword;
+const char *offsetof_keyword;
 const char *break_keyword;
 const char *continue_keyword;
 const char *return_keyword;
@@ -24,6 +26,10 @@ const char *last_keyword;
 const char **keywords;
 
 const char *foreign_name;
+const char *complete_name;
+const char *assert_name;
+const char *declare_note_name;
+const char *static_assert_name;
 
 #define KEYWORD(name) name##_keyword = str_intern(#name); buf_push(keywords, name##_keyword)
 
@@ -41,7 +47,9 @@ void init_keywords(void) {
     KEYWORD(var);
     KEYWORD(func);
     KEYWORD(sizeof);
+    KEYWORD(alignof);
     KEYWORD(typeof);
+    KEYWORD(offsetof);
     KEYWORD(break);
     KEYWORD(continue);
     KEYWORD(return);
@@ -58,6 +66,10 @@ void init_keywords(void) {
     last_keyword = default_keyword;
 
     foreign_name = str_intern("foreign");
+    complete_name = str_intern("complete");
+    assert_name = str_intern("assert");
+    declare_note_name = str_intern("declare_note");
+    static_assert_name = str_intern("static_assert");
 
     inited = true;
 }

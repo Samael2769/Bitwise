@@ -110,7 +110,7 @@ void sym_leave(Sym *sym) {
 }
 
 void sym_global_put(Sym *sym) {
-    if (map_get(&global_syms_map, (void *)sym->name)) {
+    if (map_get(&global_syms_map, sym->name)) {
         SrcPos pos = sym->decl ? sym->decl->pos : pos_builtin;
         fatal_error(pos, "Duplicate definition of global symbol");
     }
@@ -155,12 +155,20 @@ Sym *sym_global_decl(Decl *decl) {
         sym->state = SYM_RESOLVED;
         sym->type = type_enum(sym);
         buf_push(sorted_syms, sym);
+        Typespec *enum_typespec = new_typespec_name(decl->pos, str_intern("int"));
+        const char *prev_item_name = NULL;
         for (int i = 0; i < decl->enum_decl.num_items; i++) {
             EnumItem item = decl->enum_decl.items[i];
+            Expr *init;
             if (item.init) {
-                fatal_error(item.pos, "Explicit enum constant initializers are not currently supported");
+                init = item.init;
+            } else if (prev_item_name) {
+                init = new_expr_binary(item.pos, TOKEN_ADD, new_expr_name(item.pos, prev_item_name), new_expr_int(item.pos, 1, 0, 0));
+            } else {
+                init = new_expr_int(item.pos, 0, 0, 0);
             }
-            sym_global_const(item.name, sym->type, (Val){.i = i});
+            sym_global_decl(new_decl_const(item.pos, item.name, enum_typespec, init));
+            prev_item_name = item.name;
         }
     }
     return sym;
@@ -196,11 +204,16 @@ Operand operand_const(Type *type, Val val) {
     };
 }
 
-Operand operand_decay(Operand operand) {
-    operand.type = unqualify_type(operand.type);
-    if (operand.type->kind == TYPE_ARRAY) {
-        operand.type = type_ptr(operand.type->base);
+Type *type_decay(Type *type) {
+    type = unqualify_type(type);
+    if (type->kind == TYPE_ARRAY) {
+        type = type_ptr(type->base);
     }
+    return type;
+}
+
+Operand operand_decay(Operand operand) {
+    operand.type = type_decay(operand.type);
     operand.is_lvalue = false;
     return operand;
 }
@@ -342,7 +355,8 @@ bool cast_operand(Operand *operand, Type *type) {
 bool convert_operand(Operand *operand, Type *type) {
     if (is_convertible(operand, type)) {
         cast_operand(operand, type);
-        *operand = operand_rvalue(operand->type);
+        operand->type = unqualify_type(operand->type);
+        operand->is_lvalue = false;
         return true;
     }
     return false;
@@ -423,6 +437,16 @@ Type *get_resolved_type(void *ptr) {
 
 void set_resolved_type(void *ptr, Type *type) {
     map_put(&resolved_type_map, ptr, type);
+}
+
+Map resolved_expected_type_map;
+
+Type *get_resolved_expected_type(Expr *expr) {
+    return map_get(&resolved_expected_type_map, expr);
+}
+
+void set_resolved_expected_type(Expr *expr, Type *type) {
+    map_put(&resolved_expected_type_map, expr, type);
 }
 
 Sym *resolve_name(const char *name);
@@ -526,6 +550,9 @@ void complete_type(Type *type) {
         AggregateItem item = decl->aggregate.items[i];
         Type *item_type = resolve_typespec(item.type);
         complete_type(item_type);
+        if (type_sizeof(item_type) == 0) {
+            fatal_error(item.pos, "Field type of size 0 is not allowed");
+        }
         for (size_t j = 0; j < item.num_names; j++) {
             buf_push(fields, (TypeField){item.names[j], item_type});
         }
@@ -550,30 +577,48 @@ Type *resolve_decl_type(Decl *decl) {
     return resolve_typespec(decl->typedef_decl.type);
 }
 
-Type *resolve_decl_var(Decl *decl) {
-    assert(decl->kind == DECL_VAR);
-    Type *type = NULL;
-    if (decl->var.type) {
-        type = resolve_typespec(decl->var.type);
+Type *resolve_typed_init(SrcPos pos, Type *type, Expr *expr) {
+    Type *expected_type = unqualify_type(type);
+    Operand operand = resolve_expected_expr(expr, expected_type);
+    if (is_incomplete_array_type(type) && is_array_type(operand.type) && type->base == operand.type->base) {
+        // Incomplete array size, so infer the size from the initializer expression's type.
+    } else {
+        if (type && is_ptr_type(type)) {
+            operand = operand_decay(operand);
+        }
+        if (!convert_operand(&operand, expected_type)) {
+            return NULL;
+        }
     }
-    if (decl->var.expr) {
-        Operand operand = resolve_expected_expr(decl->var.expr, type);
-        if (type) {
-            if (is_incomplete_array_type(type) && is_array_type(operand.type)) {
-                // Incomplete array size, so infer the size from the initializer expression's type.
-            } else {
-                if (!convert_operand(&operand, type)) {
-                    fatal_error(decl->pos, "Invalid type in variable initializer");
-                }
+    set_resolved_expected_type(expr, operand.type);
+    return operand.type;
+}
+
+Type *resolve_init(SrcPos pos, Typespec *typespec, Expr *expr) {
+    Type *type;
+    if (typespec) {
+        type = resolve_typespec(typespec);
+        if (expr) {
+            type = resolve_typed_init(pos, type, expr);
+            if (!type) {
+                fatal_error(pos, "Invalid type in initialization");
             }
         }
-        type = operand.type;
+    } else {
+        assert(expr);
+        type = unqualify_type(resolve_expr(expr).type);
+        set_resolved_expected_type(expr, type);
     }
     complete_type(type);
     if (type->size == 0) {
-        fatal_error(decl->pos, "Cannot declare variable of size 0");
+        fatal_error(pos, "Cannot declare variable of size 0");
     }
     return type;
+}
+
+Type *resolve_decl_var(Decl *decl) {
+    assert(decl->kind == DECL_VAR);
+    return resolve_init(decl->pos, decl->var.type, decl->var.expr);
 }
 
 Type *resolve_decl_const(Decl *decl, Val *val) {
@@ -621,10 +666,15 @@ typedef struct StmtCtx {
 
 bool resolve_stmt(Stmt *stmt, Type *ret_type, StmtCtx ctx);
 
+bool is_cond_operand(Operand operand) {
+    operand = operand_decay(operand);
+    return is_scalar_type(operand.type);
+}
+
 void resolve_cond_expr(Expr *expr) {
-    Operand cond = resolve_expr(expr);
-    if (!is_scalar_type(cond.type)) {
-        fatal_error(expr->pos, "Conditional expression must have operand type");
+    Operand cond = resolve_expr_rvalue(expr);
+    if (!is_cond_operand(cond)) {
+        fatal_error(expr->pos, "Conditional expression must have scalar type");
     }
 }
 
@@ -639,6 +689,7 @@ bool resolve_stmt_block(StmtList block, Type *ret_type, StmtCtx ctx) {
 }
 
 Operand resolve_expr_binary_op(TokenKind op, const char *op_name, SrcPos pos, Operand left, Operand right);
+Operand resolve_name_operand(SrcPos pos, const char *name);
 
 void resolve_stmt_assign(Stmt *stmt) {
     assert(stmt->kind == STMT_ASSIGN);
@@ -652,58 +703,43 @@ void resolve_stmt_assign(Stmt *stmt) {
     if (left.type->nonmodifiable) {
         fatal_error(stmt->pos, "Left-hand side of assignment has non-modifiable type");
     }
-    if (stmt->assign.right) {
-        const char *assign_op_name = token_kind_name(stmt->assign.op);
-        TokenKind binary_op = assign_token_to_binary_token[stmt->assign.op];
-        Operand right = resolve_expected_expr_rvalue(stmt->assign.right, left.type);
-        Operand result;
-        if (stmt->assign.op == TOKEN_ASSIGN) {
-            result = right;
-        } else if (stmt->assign.op == TOKEN_ADD_ASSIGN || stmt->assign.op == TOKEN_SUB_ASSIGN) {
-            if (left.type->kind == TYPE_PTR && is_integer_type(right.type)) {
-                result = operand_rvalue(left.type);
-            } else if (is_arithmetic_type(left.type) && is_arithmetic_type(right.type)) {
-                result = resolve_expr_binary_op(binary_op, assign_op_name, stmt->pos, left, right);
-            } else {
-                fatal_error(stmt->pos, "Invalid operand types for %s", assign_op_name);
-            }
-        } else {
+    const char *assign_op_name = token_kind_name(stmt->assign.op);
+    TokenKind binary_op = assign_token_to_binary_token[stmt->assign.op];
+    Operand right = resolve_expected_expr_rvalue(stmt->assign.right, left.type);
+    Operand result;
+    if (stmt->assign.op == TOKEN_ASSIGN) {
+        result = right;
+    } else if (stmt->assign.op == TOKEN_ADD_ASSIGN || stmt->assign.op == TOKEN_SUB_ASSIGN) {
+        if (left.type->kind == TYPE_PTR && is_integer_type(right.type)) {
+            result = operand_rvalue(left.type);
+        } else if (is_arithmetic_type(left.type) && is_arithmetic_type(right.type)) {
             result = resolve_expr_binary_op(binary_op, assign_op_name, stmt->pos, left, right);
-        }
-        if (!convert_operand(&result, left.type)) {
-            fatal_error(stmt->pos, "Invalid type in assignment");
+        } else {
+            fatal_error(stmt->pos, "Invalid operand types for %s", assign_op_name);
         }
     } else {
-        assert(stmt->assign.op == TOKEN_INC || stmt->assign.op == TOKEN_DEC);
-        if (!(is_integer_type(left.type) || left.type->kind == TYPE_PTR)) {
-            fatal_error(stmt->pos, "%s only valid for integer and pointer types", token_kind_name(stmt->assign.op));
-        }
+        result = resolve_expr_binary_op(binary_op, assign_op_name, stmt->pos, left, right);
+    }
+    if (!convert_operand(&result, left.type)) {
+        fatal_error(stmt->pos, "Invalid type in assignment");
     }
 }
 
 void resolve_stmt_init(Stmt *stmt) {
     assert(stmt->kind == STMT_INIT);
-    Type *type;
-    if (stmt->init.type) {
-        type = resolve_typespec(stmt->init.type);
-        if (stmt->init.expr) {
-            Type *expected_type = unqualify_type(type);
-            Operand operand = resolve_expected_expr(stmt->init.expr, expected_type);
-            if (is_incomplete_array_type(type) && is_array_type(operand.type) && type->base == operand.type->base) {
-                type = operand.type;
-            } else if (!convert_operand(&operand, expected_type)) {
-                fatal_error(stmt->pos, "Invalid type in initialization statement");
-            }
-        }
-    } else {
-        assert(stmt->init.expr);
-        type = unqualify_type(resolve_expr(stmt->init.expr).type);
-    }
-    if (type->size == 0) {
-        fatal_error(stmt->pos, "Cannot declare variable of size 0");
-    }
+    Type *type = resolve_init(stmt->pos, stmt->init.type, stmt->init.expr);
     if (!sym_push_var(stmt->init.name, type)) {
         fatal_error(stmt->pos, "Shadowed definition of local symbol");
+    }
+}
+
+void resolve_static_assert(Note note) {
+    if (note.num_args != 1) {
+        fatal_error(note.pos, "#static_assert takes 1 argument");
+    }
+    Operand operand = resolve_const_expr(note.args[0].expr);
+    if (!operand.val.ull) {
+        fatal_error(note.pos, "#static_assert failed");
     }
 }
 
@@ -731,8 +767,28 @@ bool resolve_stmt(Stmt *stmt, Type *ret_type, StmtCtx ctx) {
         return false;
     case STMT_BLOCK:
         return resolve_stmt_block(stmt->block, ret_type, ctx);
+    case STMT_NOTE:
+        if (stmt->note.name == assert_name) {
+            if (stmt->note.num_args != 1) {
+                fatal_error(stmt->pos, "#assert takes 1 argument");
+            }
+            resolve_cond_expr(stmt->note.args[0].expr);
+        } else if (stmt->note.name == static_assert_name) {
+            resolve_static_assert(stmt->note);
+        } else {
+            warning(stmt->pos, "Unknown statement #directive '%s'", stmt->note.name);
+        }
+        return false;
     case STMT_IF: {
-        resolve_cond_expr(stmt->if_stmt.cond);
+        Sym *scope = sym_enter();
+        if (stmt->if_stmt.init) {
+            resolve_stmt_init(stmt->if_stmt.init);
+        }
+        if (stmt->if_stmt.cond) {
+            resolve_cond_expr(stmt->if_stmt.cond);
+        } else if (!is_cond_operand(resolve_name_operand(stmt->pos, stmt->if_stmt.init->init.name))) {
+            fatal_error(stmt->pos, "Conditional expression must have scalar type");
+        }
         bool returns = resolve_stmt_block(stmt->if_stmt.then_block, ret_type, ctx);
         for (size_t i = 0; i < stmt->if_stmt.num_elseifs; i++) {
             ElseIf elseif = stmt->if_stmt.elseifs[i];
@@ -744,6 +800,7 @@ bool resolve_stmt(Stmt *stmt, Type *ret_type, StmtCtx ctx) {
         } else {
             returns = false;
         }
+        sym_leave(scope);
         return returns;
     }
     case STMT_WHILE:
@@ -771,7 +828,7 @@ bool resolve_stmt(Stmt *stmt, Type *ret_type, StmtCtx ctx) {
         return false;
     }
     case STMT_SWITCH: {
-        Operand operand = resolve_expr(stmt->switch_stmt.expr);
+        Operand operand = resolve_expr_rvalue(stmt->switch_stmt.expr);
         if (!is_integer_type(operand.type)) {
             fatal_error(stmt->pos, "Switch expression must have integer type");
         }
@@ -897,11 +954,14 @@ Sym *resolve_name(const char *name) {
 Operand resolve_expr_field(Expr *expr) {
     assert(expr->kind == EXPR_FIELD);
     Operand operand = resolve_expr(expr->field.expr);
-    bool is_const_type = operand.type->kind == TYPE_CONST;
+    bool was_const_type = is_const_type(operand.type);
     Type *type = unqualify_type(operand.type);
     complete_type(type);
     if (is_ptr_type(type)) {
-        type = type->base;
+        operand = operand_lvalue(type->base);
+        was_const_type = is_const_type(operand.type);
+        type = unqualify_type(operand.type);
+        complete_type(type);
     }
     if (type->kind != TYPE_STRUCT && type->kind != TYPE_UNION) {
         fatal_error(expr->pos, "Can only access fields on aggregates or pointers to aggregates");
@@ -911,7 +971,7 @@ Operand resolve_expr_field(Expr *expr) {
         TypeField field = type->aggregate.fields[i];
         if (field.name == expr->field.name) {
             Operand field_operand = operand.is_lvalue ? operand_lvalue(field.type) : operand_rvalue(field.type);
-            if (is_const_type) {
+            if (was_const_type) {
                 field_operand.type = type_const(field_operand.type);
             }
             return field_operand;
@@ -1075,11 +1135,10 @@ Val eval_binary_op(TokenKind op, Type *type, Val left, Val right) {
     }
 }
 
-Operand resolve_expr_name(Expr *expr) {
-    assert(expr->kind == EXPR_NAME);
-    Sym *sym = resolve_name(expr->name);
+Operand resolve_name_operand(SrcPos pos, const char *name) {
+    Sym *sym = resolve_name(name);
     if (!sym) {
-        fatal_error(expr->pos, "Unresolved name");
+        fatal_error(pos, "Unresolved name '%s'", name);
     }
     if (sym->kind == SYM_VAR) {
         return operand_lvalue(sym->type);
@@ -1088,9 +1147,14 @@ Operand resolve_expr_name(Expr *expr) {
     } else if (sym->kind == SYM_FUNC) {
         return operand_rvalue(sym->type);
     } else {
-        fatal_error(expr->pos, "%s must be a var or const", expr->name);
+        fatal_error(pos, "%s must be a var or const", name);
         return operand_null;
     }
+}
+
+Operand resolve_expr_name(Expr *expr) {
+    assert(expr->kind == EXPR_NAME);
+    return resolve_name_operand(expr->pos, expr->name);
 }
 
 Operand resolve_unary_op(TokenKind op, Operand operand) {
@@ -1288,16 +1352,6 @@ Operand resolve_expr_binary(Expr *expr) {
     return resolve_expr_binary_op(op, op_name, expr->pos, left, right);
 }
 
-int aggregate_field_index(Type *type, const char *name) {
-    assert(type->kind == TYPE_STRUCT || type->kind == TYPE_UNION);
-    for (int i = 0; i < type->aggregate.num_fields; i++) {
-        if (type->aggregate.fields[i].name == name) {
-            return i;
-        }
-    }
-    return -1;
-}
-
 Operand resolve_expr_compound(Expr *expr, Type *expected_type) {
     assert(expr->kind == EXPR_COMPOUND);
     if (!expected_type && !expr->compound.type) {
@@ -1310,6 +1364,8 @@ Operand resolve_expr_compound(Expr *expr, Type *expected_type) {
         type = expected_type;
     }
     complete_type(type);
+    bool is_const = is_const_type(type);
+    type = unqualify_type(type);
     if (type->kind == TYPE_STRUCT || type->kind == TYPE_UNION) {
         int index = 0;
         for (size_t i = 0; i < expr->compound.num_fields; i++) {
@@ -1326,9 +1382,8 @@ Operand resolve_expr_compound(Expr *expr, Type *expected_type) {
                 fatal_error(field.pos, "Field initializer in struct/union compound literal out of range");
             }
             Type *field_type = type->aggregate.fields[index].type;
-            Operand init = resolve_expected_expr_rvalue(field.init, field_type);
-            if (!convert_operand(&init, field_type)) {
-                fatal_error(field.pos, "Invalid type in compound literal initializer");
+            if (!resolve_typed_init(field.pos, field_type, field.init)) {
+                fatal_error(field.pos, "Invalid type in compound literal initializer for aggregate type");
             }
             index++;
         }
@@ -1354,9 +1409,8 @@ Operand resolve_expr_compound(Expr *expr, Type *expected_type) {
             if (type->num_elems && index >= type->num_elems) {
                 fatal_error(field.pos, "Field initializer in array compound literal out of range");
             }
-            Operand init = resolve_expected_expr_rvalue(field.init, type->base);
-            if (!convert_operand(&init, type->base)) {
-                fatal_error(field.pos, "Invalid type in compound literal initializer");
+            if (!resolve_typed_init(field.pos, type->base, field.init)) {
+                fatal_error(field.pos, "Invalid type in compound literal initializer for array type");
             }
             max_index = MAX(max_index, index);
             index++;
@@ -1365,6 +1419,7 @@ Operand resolve_expr_compound(Expr *expr, Type *expected_type) {
             type = type_array(type->base, max_index + 1);
         }
     } else {
+        assert(is_scalar_type(type));
         if (expr->compound.num_fields > 1) {
             fatal_error(expr->pos, "Compound literal for scalar type cannot have more than one operand");
         }
@@ -1376,17 +1431,14 @@ Operand resolve_expr_compound(Expr *expr, Type *expected_type) {
             }
         }
     }
-    return operand_lvalue(type);
+    return operand_lvalue(is_const ? type_const(type) : type);
 }
 
 Operand resolve_expr_call(Expr *expr) {
     assert(expr->kind == EXPR_CALL);
     if (expr->call.expr->kind == EXPR_NAME) {
         Sym *sym = resolve_name(expr->call.expr->name);
-        if (!sym) {
-            fatal_error(expr->pos, "Unresolved name");
-        }
-        if (sym->kind == SYM_TYPE) {
+        if (sym && sym->kind == SYM_TYPE) {
             if (expr->call.num_args != 1) {
                 fatal_error(expr->pos, "Type conversion operator takes 1 argument");
             }
@@ -1589,6 +1641,22 @@ Operand resolve_expr_int(Expr *expr) {
     return operand;
 }
 
+Operand resolve_expr_modify(Expr *expr) {
+    Operand operand = resolve_expr(expr->modify.expr);
+    Type *type = operand.type;
+    complete_type(type);
+    if (!operand.is_lvalue) {
+        fatal_error(expr->pos, "Cannot modify non-lvalue");
+    }
+    if (type->nonmodifiable) {
+        fatal_error(expr->pos, "Cannot modify non-modifiable type");
+    }
+    if (!(is_integer_type(type) || type->kind == TYPE_PTR)) {
+        fatal_error(expr->pos, "%s only valid for integer and pointer types", token_kind_name(expr->modify.op));
+    }
+    return operand_rvalue(type);
+}
+
 Operand resolve_expected_expr(Expr *expr, Type *expected_type) {
     Operand result;
     switch (expr->kind) {
@@ -1634,6 +1702,7 @@ Operand resolve_expected_expr(Expr *expr, Type *expected_type) {
             if (sym && sym->kind == SYM_TYPE) {
                 complete_type(sym->type);
                 result = operand_const(type_usize, (Val){.ull = type_sizeof(sym->type)});
+                set_resolved_type(expr->sizeof_expr, sym->type);
                 break;
             }
         }
@@ -1646,6 +1715,27 @@ Operand resolve_expected_expr(Expr *expr, Type *expected_type) {
         Type *type = resolve_typespec(expr->sizeof_type);
         complete_type(type);
         result = operand_const(type_usize, (Val){.ull = type_sizeof(type)});
+        break;
+    }
+    case EXPR_ALIGNOF_EXPR: {
+        if (expr->sizeof_expr->kind == EXPR_NAME) {
+            Sym *sym = resolve_name(expr->alignof_expr->name);
+            if (sym && sym->kind == SYM_TYPE) {
+                complete_type(sym->type);
+                result = operand_const(type_usize, (Val){.ull = type_alignof(sym->type)});
+                set_resolved_type(expr->alignof_expr, sym->type);
+                break;
+            }
+        }
+        Type *type = resolve_expr(expr->alignof_expr).type;
+        complete_type(type);
+        result = operand_const(type_usize, (Val){.ull = type_alignof(type)});
+        break;
+    }
+    case EXPR_ALIGNOF_TYPE: {
+        Type *type = resolve_typespec(expr->alignof_type);
+        complete_type(type);
+        result = operand_const(type_usize, (Val){.ull = type_alignof(type)});
         break;
     }
     case EXPR_TYPEOF_TYPE: {
@@ -1666,6 +1756,21 @@ Operand resolve_expected_expr(Expr *expr, Type *expected_type) {
         result = operand_const(type_int, (Val){.i = type->typeid});
         break;
     }
+    case EXPR_OFFSETOF: {
+        Type *type = resolve_typespec(expr->offsetof_field.type);
+        if (type->kind != TYPE_STRUCT && type->kind != TYPE_UNION) {
+            fatal_error(expr->pos, "offsetof can only be used with struct/union types");
+        }
+        int field = aggregate_field_index(type, expr->offsetof_field.name);
+        if (field < 0) {
+            fatal_error(expr->pos, "No field '%s' in type", expr->offsetof_field.name);
+        }
+        result = operand_const(type_usize, (Val){.ull = type->aggregate.fields[field].offset});
+        break;
+    }
+    case EXPR_MODIFY:
+        result = resolve_expr_modify(expr);
+        break;
     default:
         assert(0);
         result = operand_null;
@@ -1676,19 +1781,22 @@ Operand resolve_expected_expr(Expr *expr, Type *expected_type) {
 }
 
 Operand resolve_const_expr(Expr *expr) {
-    Operand result = resolve_expr(expr);
-    if (!result.is_const) {
+    Operand operand = resolve_expr(expr);
+    if (!operand.is_const) {
         fatal_error(expr->pos, "Expected constant expression");
     }
-    return result;
+    return operand;
 }
 
+Map decl_note_names;
 
 void init_builtins(void) {
     static bool is_init;
     if (is_init) {
         return;
     }
+
+    map_put(&decl_note_names, declare_note_name, (void *)1);
 
     sym_global_type("void", type_void);
     sym_global_type("bool", type_bool);
@@ -1730,7 +1838,23 @@ void init_builtins(void) {
 void sym_global_decls(void) {
     for (size_t i = 0; i < global_decls->num_decls; i++) {
         Decl *decl = global_decls->decls[i];
-        if (decl->kind != DECL_NOTE) {
+        if (decl->kind == DECL_NOTE) {
+            if (!map_get(&decl_note_names, decl->note.name)) {
+                warning(decl->pos, "Unknown declaration #directive '%s'", decl->note.name);
+            }
+            if (decl->note.name == declare_note_name) {
+                if (decl->note.num_args != 1) {
+                    fatal_error(decl->pos, "#declare_note takes 1 argument");
+                }
+                Expr *arg = decl->note.args[0].expr;
+                if (arg->kind != EXPR_NAME) {
+                    fatal_error(decl->pos, "#declare_note argument must be name");
+                }
+                map_put(&decl_note_names, arg->name, (void *)1);
+            } else if (decl->note.name == static_assert_name) {
+                resolve_static_assert(decl->note);
+            }
+        } else {
             sym_global_decl(global_decls->decls[i]);
         }
     }

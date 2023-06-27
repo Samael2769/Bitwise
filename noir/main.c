@@ -8,7 +8,7 @@
 
 #include "noir.c"
 
-#include <SDL2/SDL.h>
+#include "SDL.h"
 
 int noir_key_to_sdl_scancode[NUM_KEYS] = {
     [KEY_RETURN] = SDL_SCANCODE_RETURN,
@@ -40,7 +40,7 @@ static void sdl_error(const char *name) {
 
 void sdl_audio_callback(void *userdata, uint8 *buf, int len) {
     if (app.audio.callback) {
-        app.audio.callback(app.audio.callback_context, (float2 *)buf, len / sizeof(float2));
+        app.audio.callback(app.audio.context, (float2 *)buf, len / sizeof(float2));
     }
 }
 

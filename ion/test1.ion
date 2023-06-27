@@ -9,6 +9,11 @@ func puts(str: char const*): int;
 @foreign
 func getchar(): int;
 
+@foreign
+func memcpy(dest: void*, src: void const*): void*;
+
+var some_array: int* = (:int[]){1, 2, 3};
+
 struct SomeIncompleteType;
 
 var incomplete_ptr: SomeIncompleteType*;
@@ -53,6 +58,25 @@ struct S1 {
 
 struct S2 {
     s1: S1;
+}
+
+func test_modify() {
+    i := 42;
+    p := &i;
+    p--;
+    x := *p++;
+    #assert(x == *--p);
+    (*p)++;
+    (*p)--;
+    stk: int[16];
+    sp: int* = stk;
+    *sp++ = 1;
+    *sp++ = 2;
+    x = *--sp;
+    #assert(x == 2);
+    x = *--sp;
+    #assert(x == 1);
+    #assert(sp == stk);
 }
 
 func f10(a: int[3]) {
@@ -405,8 +429,11 @@ func test_const() {
     i = int(ullong(p));
 }
 
+#static_assert(sizeof(int) == 4)
+
 func test_init() {
     x := (:int const)0;
+    #static_assert(sizeof(x) == 4);
     y: int;
     y = 0;
     z: int = 42;
@@ -416,6 +443,8 @@ func test_init() {
     for (i: ullong = 0; i < 10; i++) {
         printf("%llu\n", i);
     }
+    b: int[4] = {1, 2, 3, 4};
+    b[0] = a[2];
 }
 
 func test_sizeof() {
@@ -433,11 +462,6 @@ func test_cast() {
     a = uint64(p);
     // p = a;
     p = (:int*)a;
-}
-
-struct Any {
-    ptr: void*;
-    type: typeid;
 }
 
 func print_any(any: Any) {
@@ -458,10 +482,15 @@ func println_any(any: Any) {
     printf("\n");
 }
 
+func print_typeid(type: typeid) {
+    printf("typeid(%d)", type);
+}
+
 func print_type(type: typeid) {
     typeinfo := get_typeinfo(type);
     if (!typeinfo) {
-        printf("<typeid %d>", type);
+        print_typeid(type);
+        return;
     }
     switch (typeinfo.kind) {
     case TYPE_PTR:
@@ -477,7 +506,7 @@ func print_type(type: typeid) {
         if (typeinfo.name) {
             printf("%s", typeinfo.name);
         } else {
-            printf("typeid %d>", type);
+            print_typeid(type);
         }
     }
 }
@@ -490,7 +519,7 @@ func println_type(type: typeid) {
 func print_typeinfo(type: typeid) {
     typeinfo := get_typeinfo(type);
     if (!typeinfo) {
-        printf("<typeid %d>", type);
+        print_typeid(type);
         return;
     }
     printf("<");
@@ -516,35 +545,141 @@ func println_typeinfo(type: typeid) {
     printf("\n");
 }
 
-func test_typeof() {
+func test_typeinfo() {
     i := 42;
     f := 3.14;
-    p := &i;
-
-    type1 := typeof(i);
-    type2 := typeof(i + 1);
-    type3 := typeof(int);
-    type4 := typeof(:int*);
+    p := NULL;
 
     println_any({&i, typeof(i)});
     println_any({&f, typeof(f)});
     println_any({&p, typeof(p)});
-}
 
-func test_typeinfo() {
-    println_typeinfo(typeof(int));
-    println_typeinfo(typeof(UartCtrl));
     println_type(typeof(int));
     println_type(typeof(:int const*));
     println_type(typeof(:int const*[42]));
     println_type(typeof(UartCtrl));
+
+    println_typeinfo(typeof(int));
+    println_typeinfo(typeof(UartCtrl));
+    println_typeinfo(typeof(:IntOrPtr*));
+    println_typeinfo(typeof(IntOrPtr));
+}
+
+struct Ints {
+    num_ints: int;
+    int_ptr: int*;
+    int_arr: int[3];
+}
+
+func test_compound_literals() {
+    a := (:int[]){1, 2, 3};
+    i := 42;
+    x: Any const = {&i, typeof(i)};
+    y := (:Any const){&i, typeof(i)};
+    v: Ints = {
+        num_ints = 3,
+        int_ptr = (:int[]){1, 2, 3},
+        int_arr = {1, 2, 3},
+    };
+    ints_of_ints: Ints[] = {
+        {num_ints = 3, int_arr = {1, 2, 3}},
+        {num_ints = 2, int_ptr = (:int[2]){-1, -2}},
+    };
+}
+
+func test_complete() {
+    x := 0;
+    // x := 1;
+    // x := 2;
+    y := 0;
+    @complete
+    if (x == 0) {
+        y = 1;
+    } else if (x == 1) {
+        y = 2;
+    }
+
+    x = 1;
+    // x = -1;
+    #assert(x >= 0);
+
+    x = 0;
+    // x = 1;
+    // x = 2;
+    @complete
+    switch (x) {
+    case 0:
+        y = 3;
+    case 1:
+        y = 4;
+    }
+}
+
+func test_alignof() {
+    i := 42;
+    n1 := alignof(i);
+    n2 := alignof(i+1);
+    n3 := alignof(ullong);
+    n4 := alignof(:int*);
+}
+
+struct BufHdr {
+    cap, len: usize;
+    buf: char[1];
+    //    buf: char[];
+    //    buf: char[0];
+}
+
+func test_offsetof() {
+    n := offsetof(BufHdr, buf);
+//    n = offsetof(BufHdr, foo);
+}
+
+struct Thing {
+    a: int;
+}
+
+var thing: Thing;
+
+func returns_ptr(): Thing* {
+    return &thing;
+}
+
+func returns_ptr_to_const(): Thing const* {
+    return &thing;
+}
+
+func test_lvalue() {
+    returns_ptr().a = 5;
+//    returns_ptr_to_const().a = 5;
+    p := returns_ptr_to_const();
+//    p.a = 42;
+}
+
+func test_if() {
+    if (1) {
+    }
+//    if (x := Thing{}) {
+//    }
+    if (x := 42) {
+    }
+    if (x := 42; x >= 0) {
+    }
+    if (x: int = 42; x >= 0) {
+    }
 }
 
 func main(argc: int, argv: char const**): int {
     if (argv == 0) {
         printf("argv is null\n");
     }
-    test_typeof();
+    test_if();
+    test_modify();
+    test_lvalue();
+    test_alignof();
+    test_offsetof();
+    test_complete();
+    test_compound_literals();
     test_loops();
     test_sizeof();
     test_assign();
