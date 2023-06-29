@@ -1,134 +1,101 @@
-const char *builtin_code =
-    "#declare_note(foreign)\n"
-    "#declare_note(static_assert)\n"
-    "\n"
-    "enum TypeKind {\n"
-    "    TYPE_NONE,\n"
-    "    TYPE_VOID,\n"
-    "    TYPE_BOOL,\n"
-    "    TYPE_CHAR,\n"
-    "    TYPE_UCHAR,\n"
-    "    TYPE_SCHAR,\n"
-    "    TYPE_SHORT,\n"
-    "    TYPE_USHORT,\n"
-    "    TYPE_INT,\n"
-    "    TYPE_UINT,\n"
-    "    TYPE_LONG,\n"
-    "    TYPE_ULONG,\n"
-    "    TYPE_LLONG,\n"
-    "    TYPE_ULLONG,\n"
-    "    TYPE_FLOAT,\n"
-    "    TYPE_DOUBLE,\n"
-    "    TYPE_CONST,\n"
-    "    TYPE_PTR,\n"
-    "    TYPE_ARRAY,\n"
-    "    TYPE_STRUCT,\n"
-    "    TYPE_UNION,\n"
-    "    TYPE_FUNC,\n"
-    "}\n"
-    "\n"
-    "struct TypeFieldInfo {\n"
-    "    name: char const*;\n"
-    "    type: typeid;\n"
-    "    offset: int;\n"
-    "}\n"
-    "\n"
-    "struct TypeInfo {\n"
-    "    kind: TypeKind;\n"
-    "    size: int;\n"
-    "    align: int;\n"
-    "    name: char const*;\n"
-    "    count: int;\n"
-    "    base: typeid;\n"
-    "    fields: TypeFieldInfo*;\n"
-    "    num_fields: int;\n"
-    "}\n"
-    "\n"
-    "@foreign\n"
-    "var typeinfos: TypeInfo const**;\n"
-    "\n"
-    "@foreign\n"
-    "var num_typeinfos: int;\n"
-    "\n"
-    "func get_typeinfo(type: typeid): TypeInfo const* {\n"
-    "    if (typeinfos && type < num_typeinfos) {\n"
-    "        return typeinfos[type];\n"
-    "    } else {\n"
-    "        return NULL;\n"
-    "    }\n"
-    "}\n"
-    "struct Any {\n"
-    "    ptr: void*;\n"
-    "    type: typeid;\n"
-    "}\n"
-    "";
+enum { MAX_SEARCH_PATHS = 256 };
+const char *static_package_search_paths[MAX_SEARCH_PATHS];
+const char **package_search_paths = static_package_search_paths;
+int num_package_search_paths;
+
+void add_package_search_path(const char *path) {
+    printf("Adding package search path %s\n", path);
+    package_search_paths[num_package_search_paths++] = str_intern(path);
+}
+
+void add_package_search_path_range(const char *start, const char *end) {
+    char path[MAX_PATH];
+    size_t len = CLAMP_MAX(end - start, MAX_PATH - 1);
+    memcpy(path, start, len);
+    path[len] = 0;
+    add_package_search_path(path);
+}
+
+void init_package_search_paths(void) {
+    const char *ionhome_var = getenv("IONHOME");
+    if (!ionhome_var) {
+        printf("error: Set the environment variable IONHOME to the Ion home directory (where system_packages is located)\n");
+        exit(1);
+    }
+    char path[MAX_PATH];
+    path_copy(path, ionhome_var);
+    path_join(path, "system_packages");
+    add_package_search_path(path);
+    add_package_search_path(".");
+    const char *ionpath_var = getenv("IONPATH");
+    if (ionpath_var) {
+        const char *start = ionpath_var;
+        for (const char *ptr = ionpath_var; *ptr; ptr++) {
+            if (*ptr == ';') {
+                add_package_search_path_range(start, ptr);
+                start = ptr + 1;
+            }
+        }
+        if (*start) {
+            add_package_search_path(start);
+        }
+    }
+}
 
 void init_compiler(void) {
-    init_builtins();
-    init_types();
-}
-
-bool ion_compile_builtin(void) {
-    init_stream("<builtin>", builtin_code);
-    init_compiler();
-    global_decls = parse_decls();
-    sym_global_decls();
-    return true;
-}
-
-bool ion_compile_file(const char *path) {
-    char *str = read_file(path);
-    if (!str) {
-        printf("Failed to read %s\n", path);
-        return false;
-    }
-    if (!ion_compile_builtin()) {
-        printf("Failed to compile builtins\n");
-        return false;
-    }
-    init_stream(path, str);
-    init_compiler();
-    global_decls = parse_decls();
-    sym_global_decls();
-    finalize_syms();
-    gen_all();
-    const char *c_code = gen_buf;
-    gen_buf = NULL;
-    const char *c_path = replace_ext(path, "c");
-    if (!c_path) {
-        printf("File does not have extension\n");
-        return false;
-    }
-    if (!write_file(c_path, c_code, buf_len(c_code))) {
-        printf("Failed to write file: %s\n", c_path);
-        return false;
-    }
-    return true;
-}
-
-const char *ion_compile_str(const char *str) {
-    init_stream(NULL, str);
-    init_builtins();
-    global_decls = parse_decls();
-    sym_global_decls();
-    finalize_syms();
-    gen_all();
-    const char *result = gen_buf;
-    gen_buf = NULL;
-    return result;
+    init_package_search_paths();
+    init_keywords();
+    init_builtin_types();
+    map_put(&decl_note_names, declare_note_name, (void *)1);
 }
 
 int ion_main(int argc, char **argv) {
     if (argc < 2) {
-        printf("Usage: %s <ion-source-file>\n", argv[0]);
+        printf("Usage: %s <package> [<output-c-file>]\n", argv[0]);
         return 1;
     }
-    init_keywords();
-    const char *path = argv[1];
-    if (!ion_compile_file(path)) {
-        printf("Compilation failed.\n");
+    const char *package_name = argv[1];
+    init_compiler();
+
+    builtin_package = import_package("builtin");
+    if (!builtin_package) {
+        printf("error: Failed to compile package 'builtin'.\n");
         return 1;
     }
-    printf("Compilation succeeded.\n");
+    builtin_package->external_name = str_intern("");
+    init_builtin_syms();
+    Package *main_package = import_package(package_name);
+    if (!main_package) {
+        printf("error: Failed to compile package '%s'\n", package_name);
+        return 1;
+    }
+    const char *main_name = str_intern("main");
+    Sym *main_sym = get_package_sym(main_package, main_name);
+    if (!main_sym) {
+        printf("error: No 'main' entry point defined in package '%s'\n", package_name);
+        return 1;
+    }
+    main_sym->external_name = main_name;
+    resolve_package_syms(builtin_package);
+    resolve_package_syms(main_package);
+    // for (int i = 0; i < buf_len(package_list); i++) {
+    //     resolve_package_syms(package_list[i]);
+    // }
+    finalize_reachable_syms();
+    printf("Compiled %d symbols in %d packages\n", (int)buf_len(reachable_syms), (int)buf_len(package_list));
+    char c_path[MAX_PATH];
+    if (argc >= 3) {
+        path_copy(c_path, argv[2]);
+    } else {
+        snprintf(c_path, sizeof(c_path), "out_%s.c", package_name);
+    }
+    printf("Generating %s\n", c_path);
+    gen_all();
+    const char *c_code = gen_buf;
+    gen_buf = NULL;
+    if (!write_file(c_path, c_code, buf_len(c_code))) {
+        printf("error: Failed to write file: %s\n", c_path);
+        return 1;
+    }
     return 0;
 }

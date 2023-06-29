@@ -1,4 +1,7 @@
+#define MIN(x, y) ((x) <= (y) ? (x) : (y))
 #define MAX(x, y) ((x) >= (y) ? (x) : (y))
+#define CLAMP_MAX(x, max) MIN(x, max)
+#define CLAMP_MIN(x, min) MAX(x, min)
 #define IS_POW2(x) (((x) != 0) && ((x) & ((x)-1)) == 0)
 #define ALIGN_DOWN(n, a) ((n) & ~((a) - 1))
 #define ALIGN_UP(n, a) ALIGN_DOWN((n) + (a) - 1, (a))
@@ -89,31 +92,6 @@ bool write_file(const char *path, const char *buf, size_t len) {
     return n == 1;
 }
 
-const char *get_ext(const char *path) {
-    const char *ext = NULL;
-    for (; *path; path++) {
-        if (*path == '.') {
-            ext = path + 1;
-        }
-    }
-    return ext;
-}
-
-char *replace_ext(const char *path, const char *new_ext) {
-    const char *ext = get_ext(path);
-    if (!ext) {
-        return NULL;
-    }
-    size_t base_len = ext - path;
-    size_t new_ext_len = strlen(new_ext);
-    size_t new_path_len = base_len + new_ext_len;
-    char *new_path = xmalloc(new_path_len + 1);
-    memcpy(new_path, path, base_len);
-    memcpy(new_path + base_len, new_ext, new_ext_len);
-    new_path[new_path_len] = 0;
-    return new_path;
-}
-
 // Stretchy buffers, invented (?) by Sean Barrett
 
 typedef struct BufHdr {
@@ -137,7 +115,7 @@ typedef struct BufHdr {
 
 void *buf__grow(const void *buf, size_t new_len, size_t elem_size) {
     assert(buf_cap(buf) <= (SIZE_MAX - 1)/2);
-    size_t new_cap = MAX(16, MAX(1 + 2*buf_cap(buf), new_len));
+    size_t new_cap = CLAMP_MIN(2*buf_cap(buf), MAX(new_len, 16));
     assert(new_len <= new_cap);
     assert(new_cap <= (SIZE_MAX - offsetof(BufHdr, buf))/elem_size);
     size_t new_size = offsetof(BufHdr, buf) + new_cap*elem_size;
@@ -204,7 +182,7 @@ typedef struct Arena {
 // #define ARENA_BLOCK_SIZE 1024
 
 void arena_grow(Arena *arena, size_t min_size) {
-    size_t size = ALIGN_UP(MAX(ARENA_BLOCK_SIZE, min_size), ARENA_ALIGNMENT);
+    size_t size = ALIGN_UP(CLAMP_MIN(min_size, ARENA_BLOCK_SIZE), ARENA_ALIGNMENT);
     arena->ptr = xmalloc(size);
     assert(arena->ptr == ALIGN_DOWN_PTR(arena->ptr, ARENA_ALIGNMENT));
     arena->end = arena->ptr + size;
@@ -289,7 +267,7 @@ void *map_get(Map *map, const void *key) {
 void map_put(Map *map, const void *key, void *val);
 
 void map_grow(Map *map, size_t new_cap) {
-    new_cap = MAX(16, new_cap);
+    new_cap = CLAMP_MIN(new_cap, 16);
     Map new_map = {
         .keys = xcalloc(new_cap, sizeof(void *)),
         .vals = xmalloc(new_cap * sizeof(void *)),
@@ -392,4 +370,5 @@ typedef union Val {
     unsigned long long ull;
     uintptr_t p;
 } Val;
+
 

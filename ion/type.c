@@ -399,7 +399,7 @@ Type *type_enum(Sym *sym) {
     return type;
 }
 
-void init_types(void) {
+void init_builtin_types(void) {
     register_typeid(type_void);
     register_typeid(type_bool);
     register_typeid(type_char);
@@ -416,6 +416,7 @@ void init_types(void) {
     register_typeid(type_float);
     register_typeid(type_double);
 }
+
 
 int aggregate_field_index(Type *type, const char *name) {
     assert(is_aggregate_type(type));
